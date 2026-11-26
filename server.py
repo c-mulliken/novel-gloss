@@ -1,8 +1,8 @@
-"""novel-gloss: type a French word on your phone, get a gloss, card goes into Anki.
+"""novel-gloss: type a word from the novel you're reading, get a gloss, card goes into Anki.
 
-Runs on the Mac next to Anki. Serves the phone page, asks Claude for the gloss,
-and adds a note through AnkiConnect (localhost:8765). If Anki is closed, notes
-wait in queue.json and are added the next time Anki is reachable.
+Runs on the computer next to Anki. Serves the phone page, asks Claude for the gloss,
+and adds a note through AnkiConnect. Each language goes to its own deck. If Anki is
+closed, notes wait in queue.json and are added the next time Anki is reachable.
 """
 
 import json
@@ -32,12 +32,46 @@ def load_env():
 load_env()
 
 PORT = int(os.environ.get("PORT", "8787"))
-DECK = os.environ.get("ANKI_DECK", "French::Novel")
-MODEL_NAME = "Novel Gloss FR"
 ANKI_URL = os.environ.get("ANKI_URL", "http://127.0.0.1:8765")
+ANKI_API_KEY = os.environ.get("ANKI_API_KEY", "")  # only if you set an apiKey in AnkiConnect's config
+# Deck for each language: ANKI_DECK_<CODE> (e.g. ANKI_DECK_DE) wins, else this pattern.
+DECK_PATTERN = os.environ.get("ANKI_DECK", "{language}::Novel")
+NOTE_TYPE = os.environ.get("ANKI_NOTE_TYPE", "Novel Gloss")
+DEFAULT_LANG = os.environ.get("DEFAULT_LANGUAGE", "fr")
 CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-opus-5-5")
 EFFORT = os.environ.get("CLAUDE_EFFORT", "low")
 QUEUE_FILE = ROOT / "queue.json"
+
+# code: (English name, native name, what an inflected form on the page might look like)
+LANGUAGES = {
+    "fr": ("French", "Français", "passé simple, imperfect subjunctive, elisions like \"qu'il\""),
+    "es": ("Spanish", "Español", "preterite, subjunctive, attached pronouns like \"dándoselo\""),
+    "it": ("Italian", "Italiano", "passato remoto, subjunctive, elisions like \"dell'\""),
+    "pt": ("Portuguese", "Português", "pretérito, personal infinitive, mesoclisis like \"dir-lhe-ia\""),
+    "de": ("German", "Deutsch", "case endings, Konjunktiv, a separable prefix split off its verb"),
+    "nl": ("Dutch", "Nederlands", "separable verbs, diminutives, past participles"),
+    "sv": ("Swedish", "Svenska", "definite suffixes, past tense, passive -s forms"),
+    "da": ("Danish", "Dansk", "definite suffixes, past tense, passive -s forms"),
+    "no": ("Norwegian", "Norsk", "definite suffixes, past tense, passive -s forms"),
+    "pl": ("Polish", "Polski", "case endings, aspect pairs, past-tense gender endings"),
+    "cs": ("Czech", "Čeština", "case endings, aspect pairs, past-tense forms"),
+    "ru": ("Russian", "Русский", "case endings, aspect pairs, short-form adjectives"),
+    "el": ("Greek", "Ελληνικά", "case endings, aorist, passive forms"),
+}
+if DEFAULT_LANG not in LANGUAGES:
+    DEFAULT_LANG = "fr"
+
+
+def deck_for(lang: str) -> str:
+    return os.environ.get(f"ANKI_DECK_{lang.upper()}") or DECK_PATTERN.format(
+        language=LANGUAGES[lang][0], code=lang)
+
+
+def dup_note_types(lang: str) -> list[str]:
+    """Other note types of yours to check for an existing card: ANKI_DUP_NOTE_TYPES_<CODE>."""
+    raw = os.environ.get(f"ANKI_DUP_NOTE_TYPES_{lang.upper()}", "")
+    return [t.strip() for t in raw.split(",") if t.strip()]
+
 
 _client = None
 queue_lock = threading.Lock()
@@ -45,33 +79,32 @@ gloss_cache: dict[tuple, dict] = {}
 
 # ---------------------------------------------------------------- Claude
 
-SYSTEM = """You gloss French words for an English-speaking reader working through a French novel.
-The word is typed exactly as it appeared on the page, so it may be inflected (passé simple, \
-subjunctive, plural, feminine, elided like "qu'il"), literary, archaic, regional or slang, and \
-may contain typos or missing accents; infer the intended word. If a sentence from the book is \
-given, pick the sense that fits that sentence.
+SYSTEM = """You gloss {language} words for an English-speaking reader working through a {language} novel.
+The word is typed exactly as it appeared on the page, so it may be inflected or conjugated \
+(e.g. {forms}), literary, archaic, regional or slang, and may contain typos or missing accents; \
+infer the intended word. If a sentence from the book is given, pick the sense that fits that sentence.
 
 Field rules:
-- lemma: dictionary form (infinitive for verbs, masculine singular for adjectives, singular for \
-nouns). For a fixed expression, the expression.
+- lemma: dictionary form (infinitive for verbs, base form for adjectives, nominative singular for \
+nouns; a reflexive or separable verb as a dictionary lists it). For a fixed expression, the expression.
 - pos: one of noun, verb, adjective, adverb, preposition, conjunction, pronoun, expression, other.
-- gender: "m", "f", or "" (nouns only).
+- gender: nouns only: "m", "f", "n" (neuter) or "c" (common gender); otherwise "".
 - ipa: IPA of the lemma, no slashes.
 - gloss: the English meaning in this context, at most ~6 words, the way a margin note would put it.
 - other_senses: other common meanings, short, semicolon-separated; "" if none worth knowing.
 - form: if the typed word differs from the lemma, name the form briefly in English \
-(e.g. "passé simple, 3rd sg." or "fem. pl."); otherwise "".
+(e.g. "past tense, 3rd sg." or "fem. pl."); otherwise "".
 - register: "literary", "archaic", "familiar", "slang", "vulgar", "formal", "regional", or "".
-- example_fr: a short natural French sentence using the lemma in the same sense (not the \
+- example: a short natural {language} sentence using the lemma in the same sense (not the \
 reader's sentence).
 - example_en: its translation.
 - note: one short line of something genuinely useful (false friend, collocation, etymology hook, \
-confusable word); "" if nothing worth saying."""
+confusable word, aspect partner); "" if nothing worth saying."""
 
 # lemma and gloss come first so they can be shown while the rest is still streaming
 KEYS = [
     "lemma", "gloss", "pos", "gender", "form", "register", "ipa",
-    "other_senses", "example_fr", "example_en", "note",
+    "other_senses", "example", "example_en", "note",
 ]
 SCHEMA = {
     "type": "object",
@@ -84,9 +117,9 @@ _JSON_STR = r'"((?:[^"\\]|\\.)*)"'
 EARLY_RE = re.compile(r'"lemma"\s*:\s*' + _JSON_STR + r'\s*,\s*"gloss"\s*:\s*' + _JSON_STR)
 
 
-def gloss_word(word: str, context: str, on_early=None) -> dict:
+def gloss_word(word: str, context: str, lang: str, on_early=None) -> dict:
     """Glosses a word. on_early(lemma, gloss) fires as soon as those two fields have streamed in."""
-    key = (word.lower(), context)
+    key = (lang, word.lower(), context)
     if key in gloss_cache:
         return gloss_cache[key]
     prompt = f"Word: {word}"
@@ -99,7 +132,7 @@ def gloss_word(word: str, context: str, on_early=None) -> dict:
     with _client.beta.messages.stream(
         model=CLAUDE_MODEL,
         max_tokens=4000,
-        system=SYSTEM,
+        system=SYSTEM.format(language=LANGUAGES[lang][0], forms=LANGUAGES[lang][2]),
         messages=[{"role": "user", "content": prompt}],
         output_config={
             "effort": EFFORT,
@@ -151,18 +184,21 @@ BACK = """{{FrontSide}}<hr id="answer">
 <div class="meta">{{POS}}{{#Gender}} · {{Gender}}{{/Gender}}{{#IPA}} · /{{IPA}}/{{/IPA}}{{#Register}} · {{Register}}{{/Register}}</div>
 {{#Form}}<div class="small"><span class="lbl">On the page:</span> {{Word}} — {{Form}}</div>{{/Form}}
 {{#OtherSenses}}<div class="small"><span class="lbl">Also:</span> {{OtherSenses}}</div>{{/OtherSenses}}
-<div class="small">{{ExampleFr}}<br><span class="lbl">{{ExampleEn}}</span></div>
+<div class="small">{{Example}}<br><span class="lbl">{{ExampleEn}}</span></div>
 {{#Note}}<div class="small"><span class="lbl">Note:</span> {{Note}}</div>{{/Note}}
 {{#Book}}<div class="meta">{{Book}}</div>{{/Book}}"""
 
 FIELDS = [
     "Lemma", "Gloss", "POS", "Gender", "IPA", "Word", "Form", "Register",
-    "OtherSenses", "ExampleFr", "ExampleEn", "Note", "Context", "Book",
+    "OtherSenses", "Example", "ExampleEn", "Note", "Context", "Book",
 ]
 
 
 def anki(action: str, **params):
-    body = json.dumps({"action": action, "version": 6, "params": params}).encode()
+    req = {"action": action, "version": 6, "params": params}
+    if ANKI_API_KEY:
+        req["key"] = ANKI_API_KEY
+    body = json.dumps(req).encode()
     with urllib.request.urlopen(ANKI_URL, body, timeout=3) as r:
         out = json.load(r)
     if out.get("error"):
@@ -178,23 +214,23 @@ def anki_up() -> bool:
         return False
 
 
-_setup_done = False
+_ready: set[str] = set()
 
 
-def ensure_setup():
-    global _setup_done
-    if _setup_done:
-        return
-    if MODEL_NAME not in anki("modelNames"):
-        anki(
-            "createModel",
-            modelName=MODEL_NAME,
-            inOrderFields=FIELDS,
-            css=CARD_CSS,
-            cardTemplates=[{"Name": "Recognition", "Front": FRONT, "Back": BACK}],
-        )
-    anki("createDeck", deck=DECK)
-    _setup_done = True
+def ensure_setup(deck: str):
+    if NOTE_TYPE not in _ready:
+        if NOTE_TYPE not in anki("modelNames"):
+            anki(
+                "createModel",
+                modelName=NOTE_TYPE,
+                inOrderFields=FIELDS,
+                css=CARD_CSS,
+                cardTemplates=[{"Name": "Recognition", "Front": FRONT, "Back": BACK}],
+            )
+        _ready.add(NOTE_TYPE)
+    if deck not in _ready:
+        anki("createDeck", deck=deck)
+        _ready.add(deck)
 
 
 def esc(s: str) -> str:
@@ -211,8 +247,8 @@ def highlight(context: str, word: str) -> str:
     return ctx[:i] + '<b class="hl">' + ctx[i:i + len(word)] + "</b>" + ctx[i + len(word):]
 
 
-def build_note(item: dict) -> dict:
-    g, word = item["gloss"], item["word"]
+def build_note(item: dict, deck: str) -> dict:
+    g, word, lang = item["gloss"], item["word"], item.get("lang", "fr")
     fields = {
         "Lemma": esc(g["lemma"]),
         "Gloss": esc(g["gloss"]),
@@ -223,39 +259,43 @@ def build_note(item: dict) -> dict:
         "Form": esc(g["form"]),
         "Register": esc(g["register"]),
         "OtherSenses": esc(g["other_senses"]),
-        "ExampleFr": esc(g["example_fr"]),
+        "Example": esc(g.get("example") or g.get("example_fr", "")),
         "ExampleEn": esc(g["example_en"]),
         "Note": esc(g["note"]),
         "Context": highlight(item.get("context", ""), word),
         "Book": esc(item.get("book", "")),
     }
-    tags = ["novel-gloss"]
+    tags = ["novel-gloss", f"lang::{lang}"]
     if item.get("book"):
         tags.append("book::" + "_".join(item["book"].split()))
     return {
-        "deckName": DECK,
-        "modelName": MODEL_NAME,
+        "deckName": deck,
+        "modelName": NOTE_TYPE,
         "fields": fields,
         "tags": tags,
-        "options": {"allowDuplicate": False, "duplicateScope": "collection"},
+        "options": {"allowDuplicate": True},  # duplicates are checked in existing_note
     }
 
 
-def existing_note(lemma: str):
-    """A note with this lemma in this note type or the user's FrenchAuto type."""
+def existing_note(lemma: str, lang: str, deck: str):
+    """A note with this lemma in this language's deck, or in any of your note types listed
+    in ANKI_DUP_NOTE_TYPES_<CODE>."""
     lemma = lemma.replace('"', '').replace("*", "\\*").replace("_", "\\_")
-    q = f'"Lemma:{lemma}" (note:"{MODEL_NAME}" OR note:FrenchAuto)'
+    scopes = [f'deck:"{deck}"'] + [f'note:"{t}"' for t in dup_note_types(lang)]
+    q = f'"Lemma:{lemma}" ({" OR ".join(scopes)})'
     ids = anki("findNotes", query=q)
     return ids[0] if ids else None
 
 
 def add_to_anki(item: dict) -> dict:
     """Returns {"status": "added"|"duplicate", "noteId": int}. Raises if Anki is down."""
-    ensure_setup()
-    dup = existing_note(item["gloss"]["lemma"])
+    lang = item.get("lang", "fr")
+    deck = deck_for(lang)
+    ensure_setup(deck)
+    dup = existing_note(item["gloss"]["lemma"], lang, deck)
     if dup:
         return {"status": "duplicate", "noteId": dup}
-    note_id = anki("addNote", note=build_note(item))
+    note_id = anki("addNote", note=build_note(item, deck))
     return {"status": "added", "noteId": note_id}
 
 
@@ -333,19 +373,25 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
         elif self.path == "/api/status":
-            self.send_json({"anki": anki_up(), "queued": len(read_queue()), "deck": DECK})
+            self.send_json({
+                "anki": anki_up(),
+                "queued": len(read_queue()),
+                "default": DEFAULT_LANG,
+                "languages": [{"code": c, "name": n, "native": nat, "deck": deck_for(c)}
+                              for c, (n, nat, _) in LANGUAGES.items()],
+            })
         else:
             self.send_error(404)
 
-    def lookup(self, word, context, book, add, on_early=None) -> dict:
+    def lookup(self, word, context, book, lang, add, on_early=None) -> dict:
         t0 = time.time()
         try:
-            g = gloss_word(word, context, on_early)
+            g = gloss_word(word, context, lang, on_early)
         except Exception as e:
             print("gloss error:", repr(e), flush=True)
             raise
         ms = int((time.time() - t0) * 1000)
-        item = {"word": word, "context": context, "book": book, "gloss": g}
+        item = {"word": word, "context": context, "book": book, "lang": lang, "gloss": g}
         if add:
             try:
                 anki_res = add_to_anki(item)
@@ -355,7 +401,7 @@ class Handler(BaseHTTPRequestHandler):
                 anki_res = {"status": "queued"}
         else:
             anki_res = {"status": "skipped"}
-        print(f"{word} -> {g['lemma']}: {g['gloss']} [{ms} ms, {anki_res['status']}]", flush=True)
+        print(f"[{lang}] {word} -> {g['lemma']}: {g['gloss']} [{ms} ms, {anki_res['status']}]", flush=True)
         return {"gloss": g, "anki": anki_res, "ms": ms}
 
     def do_POST(self):
@@ -369,11 +415,14 @@ class Handler(BaseHTTPRequestHandler):
             context = (data.get("context") or "").strip()
             book = (data.get("book") or "").strip()
             add = data.get("add", True)
+            lang = data.get("lang") or DEFAULT_LANG
             if not word:
                 return self.send_json({"error": "no word"}, 400)
+            if lang not in LANGUAGES:
+                return self.send_json({"error": f"unknown language {lang!r}"}, 400)
             if self.path == "/api/gloss":  # plain JSON
                 try:
-                    return self.send_json(self.lookup(word, context, book, add))
+                    return self.send_json(self.lookup(word, context, book, lang, add))
                 except Exception as e:
                     return self.send_json({"error": f"Gloss failed: {e}"}, 502)
 
@@ -388,7 +437,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.flush()
 
             try:
-                out = self.lookup(word, context, book, add,
+                out = self.lookup(word, context, book, lang, add,
                                   on_early=lambda l, g: line({"type": "early", "lemma": l, "gloss": g}))
                 line({"type": "done", **out})
             except Exception as e:
@@ -419,5 +468,5 @@ def lan_address() -> str:
 
 if __name__ == "__main__":
     threading.Thread(target=flusher, daemon=True).start()
-    print(f"novel-gloss on http://{lan_address()}:{PORT}  (deck: {DECK}, model: {CLAUDE_MODEL})", flush=True)
+    print(f"novel-gloss on http://{lan_address()}:{PORT}  (default: {LANGUAGES[DEFAULT_LANG][0]} -> {deck_for(DEFAULT_LANG)}, model: {CLAUDE_MODEL})", flush=True)
     ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()

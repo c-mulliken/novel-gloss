@@ -33,6 +33,8 @@
   #book { font-size: 15px; }
   #status { font-size: 13px; color: var(--muted); }
   .dot { display: none; }
+  #lang { font: inherit; font-size: 13px; color: var(--fg); background: none; border: 0; padding: 4px 0;
+    margin-right: 8px; -webkit-appearance: none; appearance: none; }
 
   #result { margin-top: 20px; }
   .lemma { font-size: 26px; font-weight: 600; line-height: 1.2; }
@@ -60,7 +62,8 @@
     <button type="submit">Go</button>
   </form>
   <div class="row">
-    <span id="status"><span class="dot"></span>…</span>
+    <span><select id="lang" aria-label="Language"><option value="">…</option></select>
+      <span id="status"></span></span>
     <button class="ghost" id="toggle" type="button">+ sentence / book</button>
   </div>
   <div id="extra">
@@ -89,9 +92,21 @@ $("toggle").onclick = () => {
   $("toggle").textContent = open ? "– hide" : "+ sentence / book";
 };
 
+function fillLanguages(s) {
+  if ($("lang").dataset.filled) return;
+  const saved = store.get("lang", s.default);
+  $("lang").innerHTML = s.languages.map((l) =>
+    `<option value="${l.code}" ${l.code === saved ? "selected" : ""}>${esc(l.native)} ▾</option>`).join("");
+  if (!$("lang").value) $("lang").value = s.default;
+  $("lang").dataset.filled = "1";
+  $("lang").title = "Deck: " + s.languages.find((l) => l.code === $("lang").value).deck;
+}
+$("lang").addEventListener("change", () => { store.set("lang", $("lang").value); $("word").focus(); });
+
 async function status() {
   try {
     const s = await (await fetch("/api/status")).json();
+    fillLanguages(s);
     $("status").innerHTML = s.anki
       ? `<span class="dot up"></span>Anki connected${s.queued ? ` · ${s.queued} queued` : ""}`
       : `<span class="dot down"></span>Anki closed — cards will queue${s.queued ? ` (${s.queued})` : ""}`;
@@ -132,7 +147,7 @@ function render(word, r) {
     <div class="gloss">${esc(g.gloss)}</div>
     ${g.form ? `<div class="sec"><span class="k">${esc(word)}:</span> ${esc(g.form)}</div>` : ""}
     ${g.other_senses ? `<div class="sec"><span class="k">Also:</span> ${esc(g.other_senses)}</div>` : ""}
-    <div class="sec"><span class="ex">${esc(g.example_fr)}</span><br><span class="k">${esc(g.example_en)}</span></div>
+    <div class="sec"><span class="ex">${esc(g.example)}</span><br><span class="k">${esc(g.example_en)}</span></div>
     ${g.note ? `<div class="sec"><span class="k">Note:</span> ${esc(g.note)}</div>` : ""}
     <div class="anki"><span class="s-${st}">${ankiLabel[st] || st}</span>
       ${st === "added" ? `<button class="ghost" id="undo" type="button">Undo</button>` : ""}</div>
@@ -156,7 +171,7 @@ $("f").addEventListener("submit", async (e) => {
   try {
     const res = await fetch("/api/lookup", {
       method: "POST",
-      body: JSON.stringify({ word, context: $("context").value.trim(), book: $("book").value.trim() }),
+      body: JSON.stringify({ word, lang: $("lang").value, context: $("context").value.trim(), book: $("book").value.trim() }),
     });
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.statusText);
     // newline-delimited JSON: an "early" line (lemma + gloss), then "done" with the full card
