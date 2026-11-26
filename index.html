@@ -7,64 +7,55 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Gloss">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
-<meta name="theme-color" content="#f6f4ef" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#151515" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
 <title>Novel Gloss</title>
 <style>
-  :root {
-    --bg: #f6f4ef; --fg: #1d1c1a; --muted: #8a867e; --card: #fffdf8;
-    --line: #e4e0d6; --accent: #b4432f; --ok: #3f7d4f; --warn: #a8741a;
-  }
+  :root { --bg: #fff; --fg: #111; --muted: #777; --line: #ddd; --bad: #c00; }
   @media (prefers-color-scheme: dark) {
-    :root { --bg: #151515; --fg: #ece9e2; --muted: #8d897f; --card: #1f1f1e;
-      --line: #2f2e2b; --accent: #e37a62; --ok: #7fbf8c; --warn: #d9a650; }
+    :root { --bg: #000; --fg: #eee; --muted: #888; --line: #333; --bad: #f66; }
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; background: var(--bg); color: var(--fg); }
-  body { font: 17px/1.4 -apple-system, "Helvetica Neue", system-ui, sans-serif;
-    padding: max(14px, env(safe-area-inset-top)) 16px 40px; max-width: 560px; margin: 0 auto; }
+  body { font: 17px/1.45 system-ui, -apple-system, sans-serif;
+    padding: max(12px, env(safe-area-inset-top)) 16px 40px; max-width: 560px; margin: 0 auto; }
   form { display: flex; gap: 8px; }
-  input, textarea { font: inherit; color: var(--fg); background: var(--card);
-    border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; width: 100%; outline: none; }
-  input:focus, textarea:focus { border-color: var(--accent); }
-  #word { font-size: 22px; font-family: Georgia, "Iowan Old Style", serif; }
-  button { font: inherit; border: 0; border-radius: 12px; background: var(--accent); color: #fff;
-    padding: 0 18px; font-weight: 600; }
-  button.ghost { background: none; color: var(--muted); padding: 6px 0; font-weight: 500; font-size: 14px; }
-  .row { display: flex; justify-content: space-between; align-items: center; margin: 6px 2px 0; }
+  input, textarea { font: inherit; color: var(--fg); background: var(--bg);
+    border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; width: 100%; outline: none; }
+  input:focus, textarea:focus { border-color: var(--fg); }
+  #word { font-size: 20px; }
+  button { font: inherit; border: 0; border-radius: 6px; background: var(--fg); color: var(--bg); padding: 0 16px; }
+  button.ghost { background: none; color: var(--muted); padding: 4px 0; font-size: 14px; }
+  .row { display: flex; justify-content: space-between; align-items: center; margin-top: 4px; }
   #extra { display: none; margin-top: 8px; gap: 8px; flex-direction: column; }
   #extra.open { display: flex; }
   textarea { min-height: 70px; resize: vertical; font-size: 15px; }
   #book { font-size: 15px; }
   #status { font-size: 13px; color: var(--muted); }
-  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); margin-right: 5px; }
-  .dot.up { background: var(--ok); } .dot.down { background: var(--warn); }
+  .dot { display: none; }
 
-  #result { margin-top: 16px; }
-  .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 16px 18px; }
-  .lemma { font-family: Georgia, "Iowan Old Style", serif; font-size: 30px; font-weight: 600; line-height: 1.15; }
-  .meta { color: var(--muted); font-size: 14px; margin-top: 3px; }
-  .gloss { font-size: 24px; margin: 10px 0 6px; }
+  #result { margin-top: 20px; }
+  .lemma { font-size: 26px; font-weight: 600; line-height: 1.2; }
+  .meta { color: var(--muted); font-size: 14px; }
+  .gloss { font-size: 20px; margin: 8px 0 4px; }
   .sec { font-size: 15px; margin-top: 8px; }
   .sec .k { color: var(--muted); }
-  .ex { font-family: Georgia, serif; font-style: italic; }
-  .anki { display: flex; justify-content: space-between; align-items: center; margin-top: 12px;
-    padding-top: 10px; border-top: 1px solid var(--line); font-size: 14px; }
-  .anki .s-added { color: var(--ok); } .anki .s-queued, .anki .s-duplicate { color: var(--warn); }
-  .err { color: var(--accent); }
-  .loading { color: var(--muted); padding: 16px 4px; }
+  .ex { font-style: italic; }
+  .anki { display: flex; justify-content: space-between; align-items: center; margin-top: 14px;
+    font-size: 14px; color: var(--muted); }
+  .err { color: var(--bad); }
+  .loading { color: var(--muted); }
 
-  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted);
-    margin: 26px 2px 6px; font-weight: 600; }
+  h2 { font-size: 14px; color: var(--muted); font-weight: normal; margin: 32px 0 4px; }
   #history { list-style: none; padding: 0; margin: 0; }
-  #history li { padding: 9px 2px; border-bottom: 1px solid var(--line); display: flex; gap: 10px; }
-  #history .w { font-family: Georgia, serif; font-weight: 600; white-space: nowrap; }
+  #history li { padding: 8px 0; border-top: 1px solid var(--line); display: flex; gap: 10px; font-size: 15px; }
+  #history .w { font-weight: 600; white-space: nowrap; }
   #history .g { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>
 </head>
 <body>
   <form id="f" autocomplete="off">
-    <input id="word" type="text" placeholder="mot…" autocapitalize="off" autocorrect="off"
+    <input id="word" type="text" placeholder="Word" autocapitalize="off" autocorrect="off"
       spellcheck="false" enterkeyhint="search" autofocus>
     <button type="submit">Go</button>
   </form>
@@ -118,7 +109,7 @@ function renderHistory() {
 renderHistory();
 
 const ankiLabel = {
-  added: "✓ Added to Anki", queued: "Queued — will add when Anki is open",
+  added: "Added to Anki", queued: "Queued — will add when Anki is open",
   duplicate: "Already in your deck", skipped: "Not added",
 };
 
