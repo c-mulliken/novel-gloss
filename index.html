@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Gloss">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="theme-color" content="#f6f4ef" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#151515" media="(prefers-color-scheme: dark)">
+<title>Novel Gloss</title>
+<style>
+  :root {
+    --bg: #f6f4ef; --fg: #1d1c1a; --muted: #8a867e; --card: #fffdf8;
+    --line: #e4e0d6; --accent: #b4432f; --ok: #3f7d4f; --warn: #a8741a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #151515; --fg: #ece9e2; --muted: #8d897f; --card: #1f1f1e;
+      --line: #2f2e2b; --accent: #e37a62; --ok: #7fbf8c; --warn: #d9a650; }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--fg); }
+  body { font: 17px/1.4 -apple-system, "Helvetica Neue", system-ui, sans-serif;
+    padding: max(14px, env(safe-area-inset-top)) 16px 40px; max-width: 560px; margin: 0 auto; }
+  form { display: flex; gap: 8px; }
+  input, textarea { font: inherit; color: var(--fg); background: var(--card);
+    border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; width: 100%; outline: none; }
+  input:focus, textarea:focus { border-color: var(--accent); }
+  #word { font-size: 22px; font-family: Georgia, "Iowan Old Style", serif; }
+  button { font: inherit; border: 0; border-radius: 12px; background: var(--accent); color: #fff;
+    padding: 0 18px; font-weight: 600; }
+  button.ghost { background: none; color: var(--muted); padding: 6px 0; font-weight: 500; font-size: 14px; }
+  .row { display: flex; justify-content: space-between; align-items: center; margin: 6px 2px 0; }
+  #extra { display: none; margin-top: 8px; gap: 8px; flex-direction: column; }
+  #extra.open { display: flex; }
+  textarea { min-height: 70px; resize: vertical; font-size: 15px; }
+  #book { font-size: 15px; }
+  #status { font-size: 13px; color: var(--muted); }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); margin-right: 5px; }
+  .dot.up { background: var(--ok); } .dot.down { background: var(--warn); }
+
+  #result { margin-top: 16px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 16px 18px; }
+  .lemma { font-family: Georgia, "Iowan Old Style", serif; font-size: 30px; font-weight: 600; line-height: 1.15; }
+  .meta { color: var(--muted); font-size: 14px; margin-top: 3px; }
+  .gloss { font-size: 24px; margin: 10px 0 6px; }
+  .sec { font-size: 15px; margin-top: 8px; }
+  .sec .k { color: var(--muted); }
+  .ex { font-family: Georgia, serif; font-style: italic; }
+  .anki { display: flex; justify-content: space-between; align-items: center; margin-top: 12px;
+    padding-top: 10px; border-top: 1px solid var(--line); font-size: 14px; }
+  .anki .s-added { color: var(--ok); } .anki .s-queued, .anki .s-duplicate { color: var(--warn); }
+  .err { color: var(--accent); }
+  .loading { color: var(--muted); padding: 16px 4px; }
+
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted);
+    margin: 26px 2px 6px; font-weight: 600; }
+  #history { list-style: none; padding: 0; margin: 0; }
+  #history li { padding: 9px 2px; border-bottom: 1px solid var(--line); display: flex; gap: 10px; }
+  #history .w { font-family: Georgia, serif; font-weight: 600; white-space: nowrap; }
+  #history .g { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+</style>
+</head>
+<body>
+  <form id="f" autocomplete="off">
+    <input id="word" type="text" placeholder="mot…" autocapitalize="off" autocorrect="off"
+      spellcheck="false" enterkeyhint="search" autofocus>
+    <button type="submit">Go</button>
+  </form>
+  <div class="row">
+    <span id="status"><span class="dot"></span>…</span>
+    <button class="ghost" id="toggle" type="button">+ sentence / book</button>
+  </div>
+  <div id="extra">
+    <textarea id="context" placeholder="Paste or type the sentence (optional, helps pick the right sense)"
+      autocapitalize="sentences"></textarea>
+    <input id="book" type="text" placeholder="Book title (remembered)">
+  </div>
+
+  <div id="result"></div>
+
+  <h2>Recent</h2>
+  <ul id="history"></ul>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const store = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+};
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+$("book").value = store.get("book", "");
+$("book").addEventListener("input", () => store.set("book", $("book").value));
+$("toggle").onclick = () => {
+  const open = $("extra").classList.toggle("open");
+  $("toggle").textContent = open ? "– hide" : "+ sentence / book";
+};
+
+async function status() {
+  try {
+    const s = await (await fetch("/api/status")).json();
+    $("status").innerHTML = s.anki
+      ? `<span class="dot up"></span>Anki connected${s.queued ? ` · ${s.queued} queued` : ""}`
+      : `<span class="dot down"></span>Anki closed — cards will queue${s.queued ? ` (${s.queued})` : ""}`;
+  } catch {
+    $("status").innerHTML = `<span class="dot down"></span>Can't reach your computer`;
+  }
+}
+status(); setInterval(status, 20000);
+
+function renderHistory() {
+  const h = store.get("history", []);
+  $("history").innerHTML = h.map((x) =>
+    `<li><span class="w">${esc(x.lemma)}</span><span class="g">${esc(x.gloss)}</span></li>`).join("");
+}
+renderHistory();
+
+const ankiLabel = {
+  added: "✓ Added to Anki", queued: "Queued — will add when Anki is open",
+  duplicate: "Already in your deck", skipped: "Not added",
+};
+
+function renderEarly(m) {
+  $("result").innerHTML = `<div class="card">
+    <div class="lemma">${esc(m.lemma)}</div>
+    <div class="gloss">${esc(m.gloss)}</div>
+    <div class="sec"><span class="k">…</span></div>
+  </div>`;
+}
+
+function render(word, r) {
+  const g = r.gloss;
+  const meta = [g.pos, g.gender && (g.gender === "m" ? "masc." : "fem."), g.ipa && `/${g.ipa}/`, g.register]
+    .filter(Boolean).map(esc).join(" · ");
+  const st = r.anki.status;
+  $("result").innerHTML = `<div class="card">
+    <div class="lemma">${esc(g.lemma)}</div>
+    <div class="meta">${meta}</div>
+    <div class="gloss">${esc(g.gloss)}</div>
+    ${g.form ? `<div class="sec"><span class="k">${esc(word)}:</span> ${esc(g.form)}</div>` : ""}
+    ${g.other_senses ? `<div class="sec"><span class="k">Also:</span> ${esc(g.other_senses)}</div>` : ""}
+    <div class="sec"><span class="ex">${esc(g.example_fr)}</span><br><span class="k">${esc(g.example_en)}</span></div>
+    ${g.note ? `<div class="sec"><span class="k">Note:</span> ${esc(g.note)}</div>` : ""}
+    <div class="anki"><span class="s-${st}">${ankiLabel[st] || st}</span>
+      ${st === "added" ? `<button class="ghost" id="undo" type="button">Undo</button>` : ""}</div>
+  </div>`;
+  if (st === "added") $("undo").onclick = async () => {
+    $("undo").disabled = true;
+    const res = await fetch("/api/undo", { method: "POST", body: JSON.stringify({ noteId: r.anki.noteId }) });
+    const out = await res.json();
+    document.querySelector(".anki span").textContent = out.ok ? "Removed from Anki" : "Undo failed";
+    $("undo").remove();
+  };
+}
+
+let busy = false;
+$("f").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const word = $("word").value.trim();
+  if (!word || busy) return;
+  busy = true;
+  $("result").innerHTML = `<div class="loading">Looking up <b>${esc(word)}</b>…</div>`;
+  try {
+    const res = await fetch("/api/lookup", {
+      method: "POST",
+      body: JSON.stringify({ word, context: $("context").value.trim(), book: $("book").value.trim() }),
+    });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.statusText);
+    // newline-delimited JSON: an "early" line (lemma + gloss), then "done" with the full card
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "", r = null;
+    while (!r) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let i;
+      while ((i = buf.indexOf("\n")) >= 0) {
+        const msg = JSON.parse(buf.slice(0, i));
+        buf = buf.slice(i + 1);
+        if (msg.type === "early") renderEarly(msg);
+        else if (msg.type === "error") throw new Error(msg.error);
+        else if (msg.type === "done") r = msg;
+      }
+    }
+    if (!r) throw new Error("Connection dropped before the card finished.");
+    render(word, r);
+    const h = store.get("history", []).filter((x) => x.lemma !== r.gloss.lemma);
+    h.unshift({ lemma: r.gloss.lemma, gloss: r.gloss.gloss });
+    store.set("history", h.slice(0, 50));
+    renderHistory();
+    $("word").value = ""; $("context").value = "";
+    status();
+  } catch (err) {
+    $("result").innerHTML = `<div class="card err">${esc(err.message)}</div>`;
+  } finally {
+    busy = false;
+  }
+});
+</script>
+</body>
+</html>
